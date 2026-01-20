@@ -5,5 +5,9 @@ export default defineConfig({
 	plugins: [sveltekit(), tailwindcss()],
 	preview: {
 		allowedHosts: true,
-	}
+	},
+	server: {
+		port: 4173,
+		allowedHosts: true,
+	},
 });

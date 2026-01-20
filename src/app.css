@@ -1,1 +1,8 @@
 @import "tailwindcss";
+@plugin "daisyui";
+
+
+
+body {
+    @apply bg-amber-900;
+}
