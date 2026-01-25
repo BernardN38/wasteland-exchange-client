@@ -23,6 +23,8 @@
 	},
 	"dependencies": {
 		"@tailwindcss/vite": "^4.1.18",
+		"axios": "^1.13.2",
+		"pixi.js": "^8.15.0",
 		"svelte-spa-router": "^4.0.1",
 		"tailwindcss": "^4.1.18"
 	}
