@@ -1,6 +1,5 @@
 <script lang="ts">
-    import { Game } from "$lib/game/game";
-    const game = new Game();
+    import { game } from "$lib/game/game";
 </script>
 
 <div
@@ -8,10 +7,9 @@
 >
     <h1>Wasteland Exchange</h1>
     <div>
-        <button onclick={async () => await game.startNewGame()} class="btn"><a href="/client/game">New Game</a></button
-        >
+        <a href="/client/game"> <button class="btn">New Game</button> </a>
     </div>
-    <div><button class="btn" >Load Game</button></div>
+    <div><button class="btn">Load Game</button></div>
     <div><button class="btn">Settings</button></div>
     <div><button class="btn">Exit</button></div>
 </div>
