@@ -1,169 +1,234 @@
-import axios from "axios";
-
+import axios, { type AxiosResponse } from "axios";
 import { config } from "../config/config";
-import { Application, Assets, Container, Point, Sprite, type Renderer } from "pixi.js";
-import playersvg from "$lib/assets/round-star.png";
-import playerbase from "$lib/assets/player-base.svg";
-import Player from "./player";
+import {
+  Application,
+  Assets,
+  Container,
+  Point,
+  Sprite,
+  type Renderer,
+  type FederatedPointerEvent,
+  type Ticker,
+  type Texture,
+} from "pixi.js";
 
-interface worldObjects {
-    sprite: Sprite;
-    label: string;
+import playerTextureUrl from "$lib/assets/round-star.png";
+import debugTextureUrl from "$lib/assets/player-base.svg";;
+import circleUrl from "$lib/assets/circle.svg";
+import Player from "./player";
+import type { NewGameData } from "./api/responses";
+import { asset } from "$app/paths";
+type WorldObject = {
+  sprite: Sprite;
+  label: string;
+};
+
+function aabbIntersects(a: Sprite, b: Sprite): boolean {
+  const ab = a.getBounds();
+  const bb = b.getBounds();
+
+  return (
+    ab.x < bb.x + bb.width &&
+    ab.x + ab.width > bb.x &&
+    ab.y < bb.y + bb.height &&
+    ab.y + ab.height > bb.y
+  );
 }
 
 class Game {
-    app!: Application<Renderer>;
-    world!: Container;
-    private moveTarget: Point | null = null;
-    private player!: Player;
-    private worldObjects: worldObjects[] = [];
-    private readonly moveSpeed = 200; // world units/sec
-    private readonly stopDistance = 1;
-    constructor() {
+  private world!: Container;
+  private app!: Application;
+  private player!: Player;
+  private otherPlayers: Player[] = [];
+  private readonly worldObjects: WorldObject[] = [];
 
+  private moveTarget: Point | null = null;
+  private readonly moveSpeed = 200; // world units / sec
+  private readonly stopDistance = 1;
+
+  private readonly update = (ticker: Ticker) => {
+    const dt = ticker.deltaMS / 1000;
+
+    this.stepMoveToTarget(dt);
+    this.centerCameraOnPlayer();
+    this.checkCollisions();
+  };
+
+  private readonly onPointerDown = (e: FederatedPointerEvent) => {
+    // Convert global/screen position -> world local coordinates using Pixi transforms
+    let { x, y } = this.world.toLocal(e.global)
+    this.moveTarget = new Point(x, y);
+  };
+
+  private readonly onResize = () => {
+    this.syncWorldToScreenCenter();
+  };
+
+  public async startNewGame(): Promise<void> {
+    try {
+      await this.createNewGame();
+      this.initInput();
+      this.initLoop();
+      const resp: AxiosResponse<NewGameData> = await axios.post(`${config.apiBaseUrl}/api/v1/game/startnew`);
+      console.log("Game started:", resp.data);
+      const texture = await Assets.load<Texture>(playerTextureUrl);
+
+
+      this.otherPlayers.push(...resp.data.players.map((pData) => {
+        const sprite = this.createPlayerSprite(texture)
+        sprite.position.set(pData.location.x, pData.location.y);
+        return new Player(sprite, pData.location)
+      }));
+
+      this.world.addChild(...this.otherPlayers.map(p => p.sprite));
+      console.log(this.otherPlayers);
+    } catch (err) {
+      console.error("Error starting game:", err);
     }
-    async startNewGame(): Promise<void> {
-        axios.post(`${config.apiBaseUrl}/api/v1/game/startnew`)
-            .then(async response => {
-                console.log("Game started:", response.data);
-                await this.createNewGame();
-                this.initInput();
-                this.initLoop();
-            })
-            .catch(error => {
-                console.error("Error starting game:", error);
-            });
-    }
-    // ----------------------------
-    // Loop
-    // ----------------------------
-    private initLoop() {
-        this.app.ticker.add((ticker) => {
-            const dt = ticker.deltaMS / 1000;
-            this.checkCollision()
-            this.stepMoveToTarget(dt);
-            this.centerCameraOnPlayer();
-        });
-    }
+  }
 
-    private stepMoveToTarget(dt: number) {
-        if (!this.moveTarget) return;
-
-        const p = this.player.sprite.position;
-        // console.log('Player position:', p);
-        const dx = this.moveTarget.x - p.x;
-        const dy = this.moveTarget.y - p.y;
-        const dist = Math.hypot(dx, dy);
-
-        if (dist <= this.stopDistance) {
-            this.moveTarget = null;
-            return;
-        }
-
-        const step = Math.min(this.moveSpeed * dt, dist);
-        p.x += (dx / dist) * step;
-        p.y += (dy / dist) * step;
-    }
-
-    // ----------------------------
-    // Camera + Coords
-    // ----------------------------
-    private centerCameraOnPlayer() {
-        const p = this.player.sprite.position;
-        this.world.pivot.set(p.x, p.y);
-    }
-
-    /** Convert a screen point to world coordinates (container local space). */
-    private screenToWorld(screenX: number, screenY: number): Point {
-        // world is positioned at screen center, pivot defines camera target
-        const cx = this.world.x;
-        const cy = this.world.y;
-
-        return new Point(
-            (screenX - cx) + this.world.pivot.x,
-            (screenY - cy) + this.world.pivot.y
-        );
-    }
-    private initInput() {
-        // Let the stage receive pointer events everywhere
-        this.app.stage.eventMode = "static";
-        this.app.stage.hitArea = this.app.screen;
-
-        this.app.stage.on("pointerdown", (e) => {
-            this.moveTarget = this.screenToWorld(e.global.x, e.global.y);
-        });
+  public destroy(): void {
+    // Remove listeners + ticker if app exists
+    if (this.app) {
+      this.app.ticker.remove(this.update);
+      this.app.stage.off("pointerdown", this.onPointerDown);
+      // Destroys GPU resources + canvas; adjust flags if you want to reuse textures
+      this.app.destroy(true);
     }
 
-    async createNewGame(): Promise<void> {
-        // Create a new application
-        const app = new Application();
-        this.app = app;
-        // Initialize the application
-        await app.init({ background: '#1099bb', resizeTo: window, antialias: true, autoDensity: true, resolution: window.devicePixelRatio || 1, });
+    window.removeEventListener("resize", this.onResize);
 
-        const world = new Container();
-        this.world = world;
+    // Reset state
+    this.moveTarget = null;
+    this.worldObjects.length = 0;
+  }
 
-        this.app.stage.addChild(world);
-        world.interactive = true;
-        this.world.position.set(this.app.screen.width / 2, this.app.screen.height / 2);
+  // ----------------------------
+  // Setup
+  // ----------------------------
+  private async createNewGame(): Promise<void> {
+    // If you ever start a new game while one is running
+    this.destroy();
+    const ws = new WebSocket('https://dev.bernardn.com/api/v1/connect');
+    ws.addEventListener("open", () => {
+      console.log("CONNECTED");
+      const pingInterval = setInterval(() => {
+        console.log(`SENT: ping: `);
+        ws.send("ping");
+      }, 1000);
+    });
+    ws.addEventListener("error", (e) => {
+      console.log(e);
+    });
+    ws.addEventListener("message", (e) => {
+      console.log(e)
+    })
+    this.app = new Application<Renderer>();
+    await this.app.init({
+      background: "#cb9135",
+      resizeTo: window,
+      antialias: true,
+      autoDensity: true,
+      preference: "webgpu",
+      resolution: window.devicePixelRatio || 1,
+    });
+    console.log(this.app.renderer)
+    this.world = new Container();
+    this.app.stage.addChild(this.world);
 
-        this.player = await addPlayer(world, app)
-        debug(world, app)
+    this.syncWorldToScreenCenter();
+    window.addEventListener("resize", this.onResize);
 
-        document.getElementById("game-container")?.appendChild(app.canvas);
+    // Load textures (cached by Pixi once loaded)
+    const [playerTex, debugTex] = await Promise.all([
+      Assets.load<Texture>(playerTextureUrl),
+      Assets.load<Texture>(debugTextureUrl),
+    ]);
+
+    // Place player at world origin so it starts centered immediately
+    const playerSprite = this.createPlayerSprite(playerTex);
+    playerSprite.position.set(0, 0);
+    this.world.addChild(playerSprite);
+    this.player = new Player(playerSprite);
+
+    // Debug object offset from player
+    const debugSprite = this.createDebugSprite(debugTex);
+    debugSprite.scale.set(0.10)
+    debugSprite.position.set(50, 100);
+    this.world.addChild(debugSprite);
+    this.worldObjects.push({ sprite: debugSprite, label: "Debug Object" });
+
+    document.getElementById("game-container")?.appendChild(this.app.canvas);
+  }
+
+  private initInput(): void {
+    // Let the stage receive pointer events everywhere
+    this.app.stage.eventMode = "static";
+    this.app.stage.hitArea = this.app.screen;
+
+    this.app.stage.on("pointerdown", this.onPointerDown);
+  }
+
+  private initLoop(): void {
+    this.app.ticker.add(this.update);
+  }
+
+  // ----------------------------
+  // Update helpers
+  // ----------------------------
+  private stepMoveToTarget(dt: number): void {
+    if (!this.moveTarget) return;
+
+    const p = this.player.sprite.position;
+    const dx = this.moveTarget.x - p.x;
+    const dy = this.moveTarget.y - p.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist <= this.stopDistance) {
+      this.moveTarget = null;
+      return;
     }
-    checkCollision() {
-        this.worldObjects.forEach((obj) => {
-            if (testForAABB(this.player.sprite, obj.sprite)) {
-                console.log('Checking collision between player and object:', obj.label);
-            }
-        });
-    }
-}
-function testForAABB(object1: { getBounds: () => any; }, object2: { getBounds: () => any; }) {
-    const bounds1 = object1.getBounds();
-    const bounds2 = object2.getBounds();
 
-    return (
-        bounds1.x < bounds2.x + bounds2.width &&
-        bounds1.x + bounds1.width > bounds2.x &&
-        bounds1.y < bounds2.y + bounds2.height &&
-        bounds1.y + bounds1.height > bounds2.y
-    );
+    const step = Math.min(this.moveSpeed * dt, dist);
+    p.x += (dx / dist) * step;
+    p.y += (dy / dist) * step;
+  }
+
+  private centerCameraOnPlayer(): void {
+    const p = this.player.sprite.position;
+    this.world.pivot.set(p.x, p.y);
+  }
+
+  private syncWorldToScreenCenter(): void {
+    // World origin stays at screen center; pivot acts as camera target
+    if (!this.world || !this.app) return;
+    this.world.position.set(this.app.screen.width / 2, this.app.screen.height / 2);
+  }
+
+  private checkCollisions(): void {
+    for (const obj of this.worldObjects) {
+      if (aabbIntersects(this.player.sprite, obj.sprite)) {
+        console.log("Collision with:", obj.label);
+      }
+    }
+  }
+
+  // ----------------------------
+  // Sprite factories
+  // ----------------------------
+  private createPlayerSprite(texture: Texture): Sprite {
+    const sprite = new Sprite(texture);
+    sprite.anchor.set(0.5);
+    sprite.scale.set(0.05);
+    return sprite;
+  }
+
+  private createDebugSprite(texture: Texture): Sprite {
+    const sprite = new Sprite(texture);
+    sprite.anchor.set(0.5);
+    sprite.scale.set(0.2);
+    return sprite;
+  }
 }
 
 export const game = new Game();
-
-
-async function addPlayer(world: Container, app: Application<Renderer>): Promise<Player> {
-    // Load the bunny texture
-    const texture = await Assets.load(playersvg);
-
-    const player = new Sprite(texture);
-    player.scale.set(.05);
-    player.anchor.set(0.5);
-    player.x = app.screen.width / 2;
-    player.y = app.screen.height / 2;
-    world.addChild(player);
-    return new Player(player)
-}
-
-async function debug(world: Container, app: Application<Renderer>) {
-    // Load the bunny texture
-    const texture2 = await Assets.load(playerbase);
-
-    // Create a bunny Sprite
-    const player2 = new Sprite(texture2);
-
-    player2.scale.set(.05);
-    // Center the sprite's anchor point
-    player2.anchor.set(0.5);
-
-    // Move the sprite to the center of the screen
-    player2.x = (app.screen.width / 2) + 50;
-    player2.y = (app.screen.height / 2) + 100;
-
-
-    world.addChild(player2);
-}
